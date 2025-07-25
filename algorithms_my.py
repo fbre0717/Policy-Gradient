@@ -93,6 +93,17 @@ class PolicyGradeintAgent:
                 })
 
 
+    def eval2(self):
+        # Reset Env
+        self.obs_npy, _ = self.envs.reset(seed=123)
+        self.dones_npy = np.zeros(self.num_envs, dtype=bool)
+
+        for epoch in range(self.num_epochs):
+            epoch_rewards = self.train_epoch()
+            print("epoch ", epoch, ":", epoch_rewards)
+
+
+
     def eval(self):
         obs_npy, _ = self.envs.reset(seed=123)
         done = False
@@ -114,42 +125,16 @@ class PolicyGradeintAgent:
 
 
     def save(self, epoch:int):
-        dir_path = f"{self.env_name}_{self.num_envs}_{self.timestamp}_{self.save_name}"
-        # dir_path = self.env_name + "_" + str(self.num_envs)
+        dir_path = f"run/{self.env_name}_{self.num_envs}_{self.timestamp}_{self.save_name}"
         if not os.path.exists(dir_path):
             os.makedirs(dir_path)
         path = dir_path + "/" + str(epoch) + ".pth"
         torch.save(self.model.state_dict(), path)
 
 
-    # def load(self, loadpoint:int):
-    #     self.loadpoint = loadpoint
-    #     loadpoint_path = self.env_name + "_" + str(self.num_envs) + "/" + str(self.loadpoint) + ".pth"
-    #     self.model.load_state_dict(torch.load(loadpoint_path, weights_only=True),  strict=False)
-
-    #     print("Load Complete :", loadpoint_path)
-
-    def load(self, loadpoint:int):
-        self.loadpoint = loadpoint
-        loadpoint_path = self.env_name + "_" + str(self.num_envs) + "/" + str(self.loadpoint) + ".pth"
-
-        # 1) checkpoint 불러오기 (weights_only 제거)
-        state_dict = torch.load(loadpoint_path, map_location="cpu")
-
-        # 2) shape mismatch key 제거
-        mismatch_keys = [
-            "obs_mean_std.running_mean",
-            "obs_mean_std.running_var",
-            "obs_mean_std.count"
-        ]
-        for key in mismatch_keys:
-            if key in state_dict:
-                del state_dict[key]
-
-        # 3) strict=False로 로드
-        self.model.load_state_dict(state_dict, strict=False)
-
-        print("Load Complete :", loadpoint_path)
+    def load(self, loadpath:str):
+        state_dict = torch.load(loadpath, weights_only=True)
+        print("Load Complete :", loadpath)
 
 
     def set_eval(self):
@@ -167,8 +152,8 @@ class PolicyGradeintAgent:
         self.dones_npy = np.zeros(self.num_envs, dtype=bool)
 
         for epoch in range(self.num_epochs):
-            print("epoch :", epoch)
             epoch_rewards = self.train_epoch()
+            print("epoch", epoch, ":", epoch_rewards)
 
             self.record_wandb(epoch, epoch_rewards)
             # SAVE

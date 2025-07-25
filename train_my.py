@@ -18,10 +18,15 @@ if __name__ == '__main__':
     iswandb = False
 
 
-    isload = False
-    loadpoint = 9999
+    isload = True
+    loaddir = 'Ant-v5_10_20250725_193336_Norm obs Denorm Val'
+    loaddir = 'Ant-v5_1024_nogae'
+    # loaddir = 'Ant-v5_old'
+    loadpoint = 9500
+    
+    loadpath = f"run/{loaddir}/{str(loadpoint)}.pth"
 
-    istrain = True
+    istrain = False
     if istrain:
         isrender = False
     else:
@@ -56,7 +61,7 @@ if __name__ == '__main__':
     # Load
     agent =  PolicyGradeintAgent(envs, num_envs, num_epochs, horizon_length, batch_size, save_name, iswandb)
     if isload:
-        agent.load(loadpoint)
+        agent.load(loadpath)
 
 
     # Train or Eval
