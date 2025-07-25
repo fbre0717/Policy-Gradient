@@ -93,18 +93,28 @@ class PolicyGradeintAgent:
                 })
 
 
-    def eval2(self):
+    def eval(self):
         # Reset Env
         self.obs_npy, _ = self.envs.reset(seed=123)
         self.dones_npy = np.zeros(self.num_envs, dtype=bool)
 
-        for epoch in range(self.num_epochs):
-            epoch_rewards = self.train_epoch()
-            print("epoch ", epoch, ":", epoch_rewards)
+        while True:
+            self.set_eval()
+            with torch.no_grad():
+                epoch_rewards = torch.zeros(self.num_envs)
+
+                for t in range(self.horizon_length):
+                    obs_tensor = torch.tensor(self.obs_npy[np.newaxis, :], dtype=torch.float32)
+                    neglogpacs_tensor, value_tensor, action_tensor, mu, sigma = self.model.forward_eval(obs_tensor)
+                    self.obs_npy, rewards, terminations, truncations, _ = self.envs.step(action_tensor.squeeze(0).numpy())
+                    reward_tensor = torch.tensor(rewards, dtype=torch.float32).unsqueeze(0)
+                    epoch_rewards += reward_tensor
+
+            print("epoch rewards :", epoch_rewards.mean().item())
 
 
 
-    def eval(self):
+    def eval_old(self):
         obs_npy, _ = self.envs.reset(seed=123)
         done = False
         episode_length = 0
