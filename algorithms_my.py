@@ -10,7 +10,17 @@ import wandb
 
 from model_my import ActorCritic
 from experience_buffer_my import ExperienceBuffer, ReplayBuffer
-   
+
+def flatten(tensor: torch.Tensor):
+    """
+    Input: (H, N, D)
+    Output: (H*N, D)
+    """
+    if tensor is None:
+        return None
+    H, N, D = tensor.shape
+    return tensor.reshape(H * N, D)
+
 
 class PolicyGradeintAgent:
     def __init__(self, envs:gymnasium.vector.VectorEnv | gymnasium.Env,
@@ -144,6 +154,17 @@ class PolicyGradeintAgent:
 
     def load(self, loadpath:str):
         state_dict = torch.load(loadpath, weights_only=True)
+        # print(state_dict['obs_mean_std.running_var'].shape)
+
+        for key in ["obs_mean_std.running_mean", "obs_mean_std.running_var"]:
+            if key in state_dict and state_dict[key].ndim == 2:  # [num_envs, obs_dim] 형태일 때만
+                state_dict[key] = state_dict[key].mean(dim=0)    # [obs_dim] 으로 변경
+
+        if "obs_mean_std.count" in state_dict and state_dict["obs_mean_std.count"].ndim != 0:
+            state_dict["obs_mean_std.count"] = torch.tensor(1.0)
+
+        # print(state_dict['obs_mean_std.running_var'].shape)
+        self.model.load_state_dict(state_dict)
         print("Load Complete :", loadpath)
 
 
@@ -196,8 +217,10 @@ class PolicyGradeintAgent:
         # start_time = time.time()
         self.set_train()
         obs_tensor = self.experience_buffer.tensor_dict['obses']
+        fl_obs_tensor = flatten(obs_tensor)
         prev_actions = self.experience_buffer.tensor_dict['actions']
-        self.calc_gradients(obs_tensor, prev_actions)
+        fl_prev_actions = flatten(prev_actions)
+        self.calc_gradients(fl_obs_tensor, fl_prev_actions)
         # if isinstance(self.envs, gymnasium.vector.VectorEnv):
         #     self.update_from_experience_buffer()
         # else:
@@ -252,11 +275,24 @@ class PolicyGradeintAgent:
         return epoch_rewards.mean().item()
 
 
-    def calc_gradients(self, obs_tensor, prev_actions):
+    def calc_gradients(self, obs_tensor:torch.Tensor, prev_actions:torch.Tensor):
+        '''
+        obs_tensor : (HXN, obs_dim)
+        prev_actions : (HXN, act_dim)
+        '''
+        # print()
+        # print(f"[DEBUG] obs shape: {obs_tensor.shape}")
+        # print(f"[DEBUG] action shape: {prev_actions.shape}")
+
         neglogp, values, mu, sigma = self.model.forward(obs_tensor, prev_actions)
-        advantages = self.experience_buffer.tensor_dict['advs'].squeeze(-1)
-        returns = self.experience_buffer.tensor_dict['returns']
-        a_loss, c_loss = self.calc_losses(neglogp, values, advantages, returns)
+        # neglogp : HXN
+        # values : HXN, 1
+        advantages = self.experience_buffer.tensor_dict['advs'] # H, N, 1
+        fl_advantages = flatten(advantages)             # HxN, 1
+        returns = self.experience_buffer.tensor_dict['returns'] # H, N, 1
+        fl_return = flatten(returns)                    # HXN, 1
+
+        a_loss, c_loss = self.calc_losses(neglogp, values, fl_advantages, fl_return)
 
         # Backpropagation
         self.model.actor_optim.zero_grad()
@@ -268,7 +304,11 @@ class PolicyGradeintAgent:
 
 
     def calc_losses(self, neglogp, values, advantages, returns):
-        a_loss = (neglogp * advantages).mean()
+        # nelogp : HXN
+        # advantages : HXN, 1
+        # values : HXN, 1
+        # returns : HXN, 1
+        a_loss = (neglogp * advantages.squeeze(1)).mean()
         c_loss = ((returns - values)**2).mean()
         return a_loss, c_loss
 

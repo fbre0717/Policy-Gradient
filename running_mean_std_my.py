@@ -57,12 +57,14 @@ class RunningMeanStd(nn.Module):
     
 
     def forward(self, input, denorm:bool=False):
-        if input.dim() == 1:
-            input = input.unsqueeze(0)
-                    
         if self.training:
+            if input.ndim > 2:
+                print("[WARNING] Input dimension is more than 2.")
+                input = input.view(-1, input.shape[-1])
+
             mean = input.mean(self.axis)
             var = input.var(self.axis)
+
             self.running_mean, self.running_var, self.count = self._update_mean_var_count_from_moments(
                 self.running_mean,
                 self.running_var,
