@@ -10,11 +10,11 @@ if __name__ == '__main__':
     env_name = "Ant-v5"
 
     horizon_length = 16 # H
-    num_envs = 32 # N
+    num_envs = 1024 # N
     batch_size = num_envs * horizon_length
     num_epochs = 10000
     algorithm = 'PPO'
-    algorithm = 'A2C'
+    # algorithm = 'A2C'
     num_mini_epochs = 5 # K
     num_mini_batches = 1  # B
 
@@ -24,7 +24,8 @@ if __name__ == '__main__':
 
     istrain = True
     isload = False
-    loaddir = 'Ant-v5_10_20250725_193336_Norm obs Denorm Val'
+    # loaddir = 'Ant-v5_10_20250725_193336_Norm obs Denorm Val'
+    loaddir = 'Ant-v5_10_20250729_213010_minibatch_1_ValAdvNorm'
     # loaddir = 'Ant-v5_32_20250726_000942_Norm obs Denorm Val'
     # loaddir = 'Ant-v5_32_20250728_191815_PPO Mini Epoch + Running'
     # loaddir = 'Ant-v5_1024_gae'
@@ -35,7 +36,7 @@ if __name__ == '__main__':
 
 
     
-    save_name = f"minibatch_{num_mini_batches}"
+    save_name = f"minibatch_{num_mini_batches}_ValAdvNorm"
 
 
     # Gymnasium Environment

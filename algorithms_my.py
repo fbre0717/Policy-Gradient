@@ -112,6 +112,10 @@ class PolicyGradeintAgent:
         self.sample_times = []
         self.update_times = []
 
+        self.normalize_value = True
+        self.normalize_advantage = True
+
+
 
         self.obs_npy = np.zeros((self.num_envs, self.state_dim))
         self.dones_npy = np.zeros(self.num_envs, dtype=bool)
@@ -250,14 +254,8 @@ class PolicyGradeintAgent:
             epoch_rewards = self.play_steps()
 
         # Prepare Dataset
-        dataset = MiniBatchDataset(
-            flatten(self.experience_buffer.tensor_dict['obses']),              # HXN, O
-            flatten(self.experience_buffer.tensor_dict['actions']),            # HXN, A
-            flatten(self.experience_buffer.tensor_dict['advs']),               # HxN, 1
-            flatten(self.experience_buffer.tensor_dict['returns']),            # HXN, 1
-            flatten(self.experience_buffer.tensor_dict['neglogpacs']),         # HXN
-            self.mini_batch_size
-        )
+        self.set_train()
+        dataset = self.prepare_dataset()
 
         # Train
         self.set_train()
@@ -284,6 +282,34 @@ class PolicyGradeintAgent:
                 self.model.value_mean_std.eval()
 
         return epoch_rewards, np.mean(a_losses), np.mean(c_losses), np.mean(ratios)
+
+    def prepare_dataset(self):
+        fl_obses = flatten(self.experience_buffer.tensor_dict['obses'])
+        fl_actions = flatten(self.experience_buffer.tensor_dict['actions'])
+        fl_values = flatten(self.experience_buffer.tensor_dict['values'])
+        fl_returns = flatten(self.experience_buffer.tensor_dict['returns'])
+        fl_advantages = flatten(self.experience_buffer.tensor_dict['advs'])
+        fl_neglogpacs = flatten(self.experience_buffer.tensor_dict['neglogpacs'])
+
+        if self.normalize_value:
+            self.model.value_mean_std.train()
+            fl_values = self.model.value_mean_std(fl_values)
+            fl_returns = self.model.value_mean_std(fl_returns)
+            self.model.value_mean_std.eval()
+
+        if self.normalize_advantage:
+            fl_advantages = (fl_advantages - fl_advantages.mean()) / (fl_advantages.std() + 1e-8)
+
+
+        dataset = MiniBatchDataset(
+            fl_obses,              # HXN, O
+            fl_actions,            # HXN, A
+            fl_advantages,         # HxN, 1
+            fl_returns,            # HXN, 1
+            fl_neglogpacs,         # HXN
+            self.mini_batch_size
+        )
+        return dataset
 
 
     def play_steps(self)->float:
