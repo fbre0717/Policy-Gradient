@@ -152,18 +152,23 @@ class PolicyGradeintAgent:
                     "lr": self.lr,
                     "gamma": self.gamma,
                     "lambda": self.lam,
-                    "batch_size": self.batch_size,
+                    "epochs": self.num_epochs,
                     "horizon_length": self.horizon_length,
                     "num_envs": self.num_envs,
-                    "epochs": self.num_epochs,
+                    "batch_size": self.batch_size,
+                    "num_mini_epochs": self.num_mini_epochs,
+                    "num_mini_batches": self.num_mini_batches
                 }
             )
     
 
-    def record_wandb(self, epoch, epoch_rewards):
+    def record_wandb(self, epoch, epoch_rewards, a_loss, c_loss, ratio):
         if self.iswandb:
             wandb.log({
                     "reward": epoch_rewards,
+                    "a_loss": a_loss,
+                    "c_loss": c_loss,
+                    "ratio": ratio,
                     "epoch": epoch,
                 })
 
@@ -226,9 +231,9 @@ class PolicyGradeintAgent:
         self.dones_npy = np.zeros(self.num_envs, dtype=bool)
 
         for epoch in range(self.num_epochs):
-            epoch_rewards = self.train_epoch()
+            epoch_rewards, a_loss, c_loss, ratio = self.train_epoch()
             print("epoch", epoch, ":", epoch_rewards)
-            self.record_wandb(epoch, epoch_rewards)
+            self.record_wandb(epoch, epoch_rewards, a_loss, c_loss, ratio)
 
             if epoch % 500 == 0:
                 self.save(self.loadpoint + epoch)
@@ -236,7 +241,7 @@ class PolicyGradeintAgent:
         self.save(self.loadpoint + self.num_epochs - 1)
 
 
-    def train_epoch(self):
+    def train_epoch(self)->tuple[float, float, float, float]:
         self.experience_buffer._init_from_env_info()
 
         self.set_eval()
@@ -256,26 +261,32 @@ class PolicyGradeintAgent:
 
         # Train
         self.set_train()
+        a_losses = []
+        c_losses = []
+        ratios = []
         for mini_epoch in range(self.num_mini_epochs):  # Mini Epoch
             dataset.apply_permutation()
             for mini_batch in range(len(dataset)):      # Mini Batch
                 batch = dataset[mini_batch]
-                self.calc_gradients(
+                a_loss, c_loss, ratio = self.calc_gradients(
                     batch["obs"],
                     batch["actions"],
                     batch["advantages"],
                     batch["returns"],
                     batch["neglogp_old"],
                 )
+                a_losses.append(a_loss)
+                c_losses.append(c_loss)
+                ratios.append(ratio)
 
             if mini_epoch == 0:
                 self.model.obs_mean_std.eval()
                 self.model.value_mean_std.eval()
 
-        return epoch_rewards
+        return epoch_rewards, np.mean(a_losses), np.mean(c_losses), np.mean(ratios)
 
 
-    def play_steps(self):
+    def play_steps(self)->float:
         '''Sample and Update '''
         epoch_rewards = torch.zeros(self.num_envs)
 
@@ -315,7 +326,7 @@ class PolicyGradeintAgent:
         return epoch_rewards.mean().item()
 
 
-    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old)-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old)-> tuple[float, float, float]:
         """
         Args:
             obs_tensor (torch.Size([H*N, O])):
@@ -331,13 +342,14 @@ class PolicyGradeintAgent:
         neglogp_new, values_new, mu, sigma = self.model.forward(obs_tensor, prev_actions)
         if self.algorithm == 'A2C':
             a_loss, c_loss = self.calc_losses_a2c(neglogp_new, values_new, advantages, returns) # A2C
-            ratio = 1
+            ratio = torch.tensor(1.0)
         elif self.algorithm == 'PPO':
             a_loss, c_loss, ratio = self.calc_losses_ppo(neglogp_new, neglogp_old, values_new, advantages, returns)
         else:
-            raise ValueError(f"Unsupported algorithm: {self.algorithm}")            
+            raise ValueError(f"Unsupported algorithm: {self.algorithm}")
         self.update_actor_critic(a_loss, c_loss)
-        return a_loss, c_loss, ratio
+
+        return a_loss.item(), c_loss.item(), ratio.item()
 
 
     def update_actor_critic(self, a_loss, c_loss):
@@ -387,6 +399,10 @@ class PolicyGradeintAgent:
             values (torch.Size([H*N/B, 1])):
             advantages (torch.Size([H*N/B, 1])):
             returns (torch.Size([H*N/B, 1])):
+        Returns:
+            a_loss (torch.Size([])): 
+            - c_loss (torch.Size([]))
+            - ratio_mean (torch.Size([]))
 
         Notation:
             H = horizon_length (rollout length)
@@ -398,7 +414,7 @@ class PolicyGradeintAgent:
         surr2 = advantages.squeeze(1) * torch.clamp(ratio, 1.0 - curr_e_clip, 1.0 + curr_e_clip)
         a_loss = torch.max(-surr1, -surr2).mean()
         c_loss = ((returns - values) ** 2).mean()
-        return a_loss, c_loss, ratio
+        return a_loss, c_loss, ratio.mean()
 
 
     def discount_values(

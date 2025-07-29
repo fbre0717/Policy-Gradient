@@ -9,18 +9,17 @@ if __name__ == '__main__':
     # env_name = "InvertedPendulum-v5"
     env_name = "Ant-v5"
 
-    # num_envs = 1
     horizon_length = 16 # H
-    num_envs = 10 # N
+    num_envs = 32 # N
     batch_size = num_envs * horizon_length
-    num_epochs = 3
+    num_epochs = 10000
     algorithm = 'PPO'
     algorithm = 'A2C'
     num_mini_epochs = 5 # K
-    num_mini_batches = 2 # B
+    num_mini_batches = 1  # B
 
-    iswandb = False
-    issave = False
+    iswandb = True
+    issave = True
 
 
     istrain = True
@@ -36,7 +35,7 @@ if __name__ == '__main__':
 
 
     
-    save_name = "PPO Best Ant"
+    save_name = f"minibatch_{num_mini_batches}"
 
 
     # Gymnasium Environment
