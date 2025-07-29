@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import numpy as np
-import gymnasium
 
 class BaseModelNetwork(nn.Module):
     def __init__(self, obs_shape, normalize_value, normalize_input, value_size):

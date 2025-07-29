@@ -1,9 +1,38 @@
 import torch
-from collections import deque
-import random
-
 
 class ExperienceBuffer:
+    """
+    Experience buffer for storing rollout data across horizon and environments.
+
+    tensor_dict structure:
+    
+        - obses:      torch.Size([H, N, O])
+            Observations (state vectors)
+        - rewards:    torch.Size([H, N, 1])
+            Scalar rewards per step
+        - values:     torch.Size([H, N, 1])
+            Value function estimates
+        - returns:    torch.Size([H, N, 1])
+            Discounted returns (used for critic target)
+        - advs:       torch.Size([H, N, 1])
+            Generalized advantage estimates (GAE)
+        - neglogpacs: torch.Size([H, N])
+            Negative log probability of selected actions
+        - dones:      torch.Size([H, N])
+            Done flags (1 if episode terminated/truncated)
+        - actions:    torch.Size([H, N, A])
+            Actions sampled from policy
+        - mus:        torch.Size([H, N, A])
+            Mean of action distribution
+        - sigmas:     torch.Size([H, N, A])
+            Std deviation of action distribution
+
+    Notation:
+        H = horizon_length (rollout length)
+        N = number of parallel environments
+        O = observation dimension
+        A = action dimension
+    """    
     def __init__(self, obs_dim:int, action_dim:int, num_envs:int, horizon_length=16, value_size=1, device="cpu"):
         self.horizon_length = horizon_length
         self.num_envs = num_envs
@@ -92,64 +121,64 @@ class ExperienceBuffer:
         )
 
 
-    def update_data(self, name, index, val):
+    def update_step_datas(
+            self, 
+            step_index:int, 
+            obs_tensor:torch.Tensor, 
+            done_tensor:torch.Tensor, 
+            neglogpacs_tensor:torch.Tensor, 
+            value_tensor:torch.Tensor, 
+            action_tensor:torch.Tensor, 
+            reward_tensor:torch.Tensor
+            ):
+        """
+        Update Step Data
+
+        Args:
+            step_index (int):
+            obs_tensor (torch.Size([N, O]):
+            done_tensor (torch.Size([N]):
+            action_tensor (torch.Size([N, A]):
+            value_tensor (torch.Size([N, 1]):
+            neglogpacs_tensor (torch.Size([N]):
+            reward_tensor (torch.Size([N, 1]):
+        """
+        self.update_step_data('obses', step_index, obs_tensor)
+        self.update_step_data('dones', step_index, done_tensor)
+        self.update_step_data('actions', step_index, action_tensor)
+        self.update_step_data('values', step_index, value_tensor)
+        self.update_step_data('neglogpacs', step_index, neglogpacs_tensor.squeeze(-1))
+        self.update_step_data('rewards', step_index, reward_tensor)
+
+
+    def update_step_data(self, name:str, index:int, val:torch.Tensor):
+        """
+        Update environment batch data (step-level).
+
+        Args:
+            name (str):
+            index (int):
+            val (torch.Size([N, D]) or torch.Size([N])):
+                - If dict, updates each sub-key individually.
+        """
         if isinstance(val, dict):
             for k, v in val.items():
                 self.tensor_dict[name][k][index, :] = v
         else:
             self.tensor_dict[name][index, :] = val
 
-    def upadte_data_val(self, name, val):
+
+    def update_horizon_data(self, name:str, val:torch.Tensor):
+        """
+        Update horizon data (trajectory-level).
+
+        Args:
+            name (str): Key name in tensor_dict.
+            val (Tensor):
+                torch.Size([H, N, 1])
+                - H = horizon length (timesteps)
+                - N = number of environments
+                - 1 = scalar feature (e.g., reward, done flag)
+                - Typically used to store full rollout data across horizon length.
+        """
         self.tensor_dict[name] = val
- 
-
-
- 
-class ReplayBuffer(deque):
-    """
-    Tuple:(
-            obs:        torch.Tensor, shape (1, obs_dim)
-            next_obs:   torch.Tensor, shape (1, obs_dim)
-            log_prob:   torch.Tensor, shape (1,)
-            reward:     torch.Tensor, shape (1,)
-            done:       torch.Tensor, shape (1,)
-        )
-    """
-    def __init__(self, capacity=1000000):
-        super().__init__(maxlen=capacity)
-
-    def sample(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        ReplayBuffer에서 무작위로 batch_size만큼의 transition을 샘플링하여 반환합니다.
-
-        Parameters
-        ----------
-        batch_size : int
-            샘플링할 transition의 개수.
-
-        Returns
-        -------
-        obs : torch.Tensor
-            shape (batch_size, obs_dim)
-        next_obs : torch.Tensor
-            shape (batch_size, obs_dim)
-        log_prob : torch.Tensor
-            shape (batch_size, 1)
-        reward : torch.Tensor
-            shape (batch_size, 1)
-        done : torch.Tensor
-            shape (batch_size, 1)
-        """
-        if batch_size > len(self):
-            raise ValueError(f"Requested batch_size={batch_size} but buffer has only {len(self)} items.")
-
-        batch = random.sample(self, batch_size)
-        obs, next_obs, log_prob, reward, done = zip(*batch)
-
-        return (
-            torch.cat(obs, dim=0),
-            torch.cat(next_obs, dim=0),
-            torch.stack(log_prob),
-            torch.stack(reward),
-            torch.stack(done),
-        )

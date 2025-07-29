@@ -23,20 +23,6 @@ class Actor(nn.Module):
         std = self.log_std.exp()
         return mu, std
 
-    def get_action(self, obs_tensor:torch.Tensor):
-        mu, std = self.forward(obs_tensor)
-        dist = Normal(mu, std)
-        action = dist.sample()
-        logpacs: torch.Tensor = dist.log_prob(action).sum(dim=-1, keepdim=True)
-        neglogpacs = -logpacs
-        return action, neglogpacs
-    
-    def get_eval_action(self, state: torch.Tensor):
-        with torch.no_grad():
-            mu, _ = self.forward(state)
-        return mu.squeeze(0).numpy()
-
-
 
 class Critic(nn.Module):
     def __init__(self, state_dim, hidden_dim):
@@ -52,18 +38,9 @@ class Critic(nn.Module):
         return value
 
 
-    def eval_critic(self, obs_tensor:torch.Tensor):
-        with torch.no_grad():
-            x = F.relu(self.fc1(obs_tensor))
-            x = F.relu(self.fc2(x))
-            value = self.value_head(x)
-        return value
-    
-
 class ActorCritic(nn.Module):
     def __init__(self, obs_dim, action_dim, hidden_dim, lr, log_std):
         super().__init__()
-        ''' add anything you need (e.g., state, action dim, ~)'''
         self.lr = lr
         self.log_std = log_std
 
@@ -98,16 +75,15 @@ class ActorCritic(nn.Module):
         mu, sigma = self.actor(norm_obs_tensor)
         value = self.critic(norm_obs_tensor)
         distr = torch.distributions.Normal(mu, sigma, validate_args=False)
+
         neglogp = -distr.log_prob(prev_actions).sum(dim=-1)
         return torch.squeeze(neglogp), value, mu, sigma
 
-    def norm_obs(self, observation):
-        # return observation
+    def norm_obs(self, observation:torch.Tensor):
         with torch.no_grad():
             return self.obs_mean_std(observation)
 
-    def denorm_value(self, value):
-        # return value
+    def denorm_value(self, value:torch.Tensor):
         with torch.no_grad():
             return self.value_mean_std(value, denorm=True)
 
