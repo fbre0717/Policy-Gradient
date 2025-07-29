@@ -10,14 +10,15 @@ if __name__ == '__main__':
     env_name = "Ant-v5"
 
     # num_envs = 1
-    num_envs = 12
+    num_envs = 1024
     horizon_length = 16
     batch_size = num_envs * horizon_length
-    num_epochs = 5
+    num_epochs = 10000
     algorithm = 'ppo'
-    num_mini_epochs = 4
+    num_mini_epochs = 5
+    num_mini_batch = 1
 
-    iswandb = False
+    iswandb = True
 
 
     istrain = True
@@ -33,7 +34,7 @@ if __name__ == '__main__':
 
 
     
-    save_name = "PPO Mini Epoch + Running"
+    save_name = "PPO Best Ant"
 
 
     # Gymnasium Environment
@@ -63,7 +64,16 @@ if __name__ == '__main__':
 
 
     # Load
-    agent =  PolicyGradeintAgent(envs, num_envs, num_epochs, horizon_length, batch_size, save_name, algorithm, num_mini_epochs, iswandb)
+    agent =  PolicyGradeintAgent(envs, 
+                                 num_envs, 
+                                 num_epochs, 
+                                 horizon_length, 
+                                 batch_size, 
+                                 save_name, 
+                                 algorithm, 
+                                 num_mini_epochs, 
+                                 iswandb)
+
     if isload:
         agent.load(loadpath)
 

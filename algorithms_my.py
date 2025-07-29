@@ -28,6 +28,36 @@ def flatten(tensor: torch.Tensor):
     else:
         raise ValueError(f"Unsupported tensor shape: {tensor.shape}")
 
+class MiniBatchDataset:
+    def __init__(self, obs, actions, advantages, returns, neglogp_old, minibatch_size):
+        self.obs = obs
+        self.actions = actions
+        self.advantages = advantages
+        self.returns = returns
+        self.neglogp_old = neglogp_old
+        self.minibatch_size = minibatch_size
+
+        self.indices = torch.arange(self.obs.shape[0])
+        self.apply_permutation()
+
+    def __len__(self):
+        return len(self.indices) // self.minibatch_size
+
+    def __getitem__(self, idx):
+        start = idx * self.minibatch_size
+        end = start + self.minibatch_size
+        mb_idx = self.indices[start:end]
+        return {
+            "obs": self.obs[mb_idx],
+            "actions": self.actions[mb_idx],
+            "advantages": self.advantages[mb_idx],
+            "returns": self.returns[mb_idx],
+            "neglogp_old": self.neglogp_old[mb_idx],
+        }
+
+    def apply_permutation(self):
+        self.indices = torch.randperm(self.obs.shape[0])
+
 
 class PolicyGradeintAgent:
     def __init__(self, envs:gymnasium.vector.VectorEnv | gymnasium.Env,
@@ -49,7 +79,7 @@ class PolicyGradeintAgent:
 
         self.gamma = 0.99
         self.lam = 0.95
-        self.lr = 0.0002
+        self.lr = 3e-4
         self.log_std = 0
     
         if isinstance(self.envs, gymnasium.vector.VectorEnv):
@@ -66,6 +96,14 @@ class PolicyGradeintAgent:
         self.num_epochs = num_epochs
         self.horizon_length = horizon_length
         self.batch_size = batch_size
+        # self.mini_batch_size = 512
+        # self.mini_batch_size = 256
+        # self.mini_batch_size = 128
+        # self.mini_batch_size = 64
+        # self.mini_batch_size = 32
+        self.mini_batch_size = 32768
+        self.mini_batch_size = 16384
+        # self.mini_batch_size = self.batch_size // self.num_minibatches
 
         self.replay_buffer = ReplayBuffer()
         self.experience_buffer = ExperienceBuffer(self.state_dim, 
@@ -228,20 +266,44 @@ class PolicyGradeintAgent:
         # Update Model
         # start_time = time.time()
         self.set_train()
-        obs_tensor = self.experience_buffer.tensor_dict['obses']
-        fl_obs_tensor = flatten(obs_tensor)
-        prev_actions = self.experience_buffer.tensor_dict['actions']
-        fl_prev_actions = flatten(prev_actions)
+        fl_obs_tensor = flatten(self.experience_buffer.tensor_dict['obses'])                # HXN, O
+        fl_prev_actions = flatten(self.experience_buffer.tensor_dict['actions'])            # HXN, A
+        fl_advantages = flatten(self.experience_buffer.tensor_dict['advs'])                 # HxN, 1
+        fl_returns = flatten(self.experience_buffer.tensor_dict['returns'])                 # HXN, 1
+        fl_neglogp_old = flatten(self.experience_buffer.tensor_dict['neglogpacs'])          # HXN
+
+
+        dataset = MiniBatchDataset(
+            fl_obs_tensor, fl_prev_actions,
+            fl_advantages, fl_returns, fl_neglogp_old,
+            self.mini_batch_size
+        )
         
         if self.algorithm == 'a2c':
-            self.calc_gradients(fl_obs_tensor, fl_prev_actions)
+            self.calc_gradients_old(fl_obs_tensor, fl_prev_actions)
         elif self.algorithm == 'ppo':
-            for n in range(self.num_mini_epochs):
-                self.calc_gradients(fl_obs_tensor, fl_prev_actions)
-
-                if n == 0:
+            for mini_epoch in range(self.num_mini_epochs):
+                if mini_epoch == 0:
+                    self.model.obs_mean_std.train()
+                    self.model.value_mean_std.train()
+                else:
                     self.model.obs_mean_std.eval()
                     self.model.value_mean_std.eval()
+
+                dataset.apply_permutation()
+
+                # Mini Batch
+                for i in range(len(dataset)):
+                    batch = dataset[i]
+                    self.calc_gradients(
+                        batch["obs"],
+                        batch["actions"],
+                        batch["advantages"],
+                        batch["returns"],
+                        batch["neglogp_old"],
+                    )                
+
+                # self.calc_gradients(fl_obs_tensor, fl_prev_actions)
 
 
         # if isinstance(self.envs, gymnasium.vector.VectorEnv):
@@ -298,7 +360,19 @@ class PolicyGradeintAgent:
         return epoch_rewards.mean().item()
 
 
-    def calc_gradients(self, obs_tensor:torch.Tensor, prev_actions:torch.Tensor):
+    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old):
+        neglogp_new, values_new, mu, sigma = self.model.forward(obs_tensor, prev_actions)
+        if self.algorithm == 'a2c':
+            a_loss, c_loss = self.calc_losses_a2c(neglogp_new, values_new, advantages, returns) # A2C
+        elif self.algorithm == 'ppo':
+            a_loss, c_loss, ratio = self.calc_losses_ppo(neglogp_new, neglogp_old, values_new, advantages, returns)
+        else:
+            raise ValueError(f"Unsupported algorithm: {self.algorithm}")            
+        self.update_actor_critic(a_loss, c_loss)
+        return a_loss, c_loss, ratio
+
+
+    def calc_gradients_old(self, obs_tensor:torch.Tensor, prev_actions:torch.Tensor):
         '''
         obs_tensor : (HXN, obs_dim)
         prev_actions : (HXN, act_dim)
@@ -317,7 +391,7 @@ class PolicyGradeintAgent:
         if self.algorithm == 'a2c':
             a_loss, c_loss = self.calc_losses_a2c(neglogp_new, values_new, fl_advantages, fl_return) # A2C
         elif self.algorithm == 'ppo':
-            a_loss, c_loss = self.calc_losses_ppo(neglogp_new, fl_neglogp_old, values_new, fl_advantages, fl_return) # PPO
+            a_loss, c_loss, ratio = self.calc_losses_ppo(neglogp_new, fl_neglogp_old, values_new, fl_advantages, fl_return) # PPO
         else:
             raise ValueError(f"Unsupported algorithm: {self.algorithm}")
         self.update_actor_critic(a_loss, c_loss)
@@ -347,7 +421,7 @@ class PolicyGradeintAgent:
         surr2 = advantages.squeeze(1) * torch.clamp(ratio, 1.0 - curr_e_clip, 1.0 + curr_e_clip)
         a_loss = torch.max(-surr1, -surr2).mean()
         c_loss = ((returns - values) ** 2).mean()
-        return a_loss, c_loss
+        return a_loss, c_loss, ratio
 
 
     def discount_values(self, last_dones, last_values, dones, values, rewards):
