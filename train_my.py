@@ -10,14 +10,14 @@ if __name__ == '__main__':
     env_name = "Ant-v5"
 
     # num_envs = 1
-    num_envs = 10
-    horizon_length = 16
+    horizon_length = 16 # H
+    num_envs = 10 # N
     batch_size = num_envs * horizon_length
     num_epochs = 3
     algorithm = 'PPO'
-    # algorithm = 'A2C'
-    num_mini_epochs = 5
-    num_mini_batch = 2
+    algorithm = 'A2C'
+    num_mini_epochs = 5 # K
+    num_mini_batches = 2 # B
 
     iswandb = False
     issave = False
@@ -75,7 +75,7 @@ if __name__ == '__main__':
         save_name, 
         algorithm, 
         num_mini_epochs, 
-        num_mini_batch,
+        num_mini_batches,
         iswandb,
         issave
         )

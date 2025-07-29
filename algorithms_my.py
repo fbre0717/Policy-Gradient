@@ -10,7 +10,7 @@ import wandb
 from model_my import ActorCritic
 from experience_buffer_my import ExperienceBuffer
 
-def flatten(tensor: torch.Tensor):
+def flatten(tensor: torch.Tensor) -> torch.Tensor:
     """
     Input:
         - (H, N, D) -> (H*N, D)
@@ -26,6 +26,7 @@ def flatten(tensor: torch.Tensor):
         return tensor.reshape(H * N)
     else:
         raise ValueError(f"Unsupported tensor shape: {tensor.shape}")
+
 
 class MiniBatchDataset:
     def __init__(self, obs, actions, advantages, returns, neglogp_old, minibatch_size):
@@ -69,7 +70,7 @@ class PolicyGradeintAgent:
             save_name="",
             algorithm='PPO',
             num_mini_epochs=5,
-            num_mini_batch=1,
+            num_mini_batches=1,
             iswandb=True,
             issave=True
             ):
@@ -80,7 +81,7 @@ class PolicyGradeintAgent:
         self.num_epochs = num_epochs
 
         self.batch_size = batch_size
-        self.init_algorithm(algorithm, num_mini_epochs, num_mini_batch)
+        self.init_algorithm(algorithm, num_mini_epochs, num_mini_batches)
 
 
         self.gamma = 0.99
@@ -116,17 +117,17 @@ class PolicyGradeintAgent:
         self.dones_npy = np.zeros(self.num_envs, dtype=bool)
 
 
-    def init_algorithm(self, algorithm, num_mini_epochs, num_mini_batch):
+    def init_algorithm(self, algorithm:str, num_mini_epochs:int, num_mini_batches:int):
         self.algorithm = algorithm
         if self.algorithm == 'A2C':
             self.num_mini_epochs = 1
-            self.num_mini_batch = 1
+            self.num_mini_batches = 1
         elif self.algorithm == 'PPO':
             self.num_mini_epochs = num_mini_epochs
-            self.num_mini_batch = num_mini_batch
+            self.num_mini_batches = num_mini_batches
         else:
             raise ValueError(f"Unsupported algorithm: {self.algorithm}")            
-        self.mini_batch_size = self.batch_size // self.num_mini_batch
+        self.mini_batch_size = self.batch_size // self.num_mini_batches
 
 
     def init_dims_from_env(self):
@@ -257,8 +258,8 @@ class PolicyGradeintAgent:
         self.set_train()
         for mini_epoch in range(self.num_mini_epochs):  # Mini Epoch
             dataset.apply_permutation()
-            for i in range(len(dataset)):               # Mini Batch
-                batch = dataset[i]
+            for mini_batch in range(len(dataset)):      # Mini Batch
+                batch = dataset[mini_batch]
                 self.calc_gradients(
                     batch["obs"],
                     batch["actions"],
@@ -314,7 +315,19 @@ class PolicyGradeintAgent:
         return epoch_rewards.mean().item()
 
 
-    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old):
+    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old)-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            obs_tensor (torch.Size([H*N, O])):
+            prev_actions (torch.Size([H*N, A])):
+            advantages (torch.Size([H*N, 1])):
+            returns (torch.Size([H*N, 1])):
+            neglogp_old (torch.Size([H*N])):
+
+        ## Notation:
+            H = horizon_length (rollout length)
+            N = num_envs (number of parallel environments)
+        """
         neglogp_new, values_new, mu, sigma = self.model.forward(obs_tensor, prev_actions)
         if self.algorithm == 'A2C':
             a_loss, c_loss = self.calc_losses_a2c(neglogp_new, values_new, advantages, returns) # A2C
@@ -328,6 +341,9 @@ class PolicyGradeintAgent:
 
 
     def update_actor_critic(self, a_loss, c_loss):
+        '''
+        Backward & Optimizer Step
+        '''
         self.model.actor_optim.zero_grad()
         a_loss.backward()
         self.model.actor_optim.step()
@@ -336,17 +352,47 @@ class PolicyGradeintAgent:
         self.model.critic_optim.step()
 
 
-    def calc_losses_a2c(self, neglogp, values, advantages, returns):
-        # nelogp : HXN
-        # advantages : HXN, 1
-        # values : HXN, 1
-        # returns : HXN, 1
+    def calc_losses_a2c(
+        self,
+        neglogp: torch.Tensor,
+        values: torch.Tensor,
+        advantages: torch.Tensor,
+        returns: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:        
+        """
+        Calculate A2C Loss
+
+        Args:
+            neglogp (torch.Size([H*N])):
+            values (torch.Size([H*N, 1])):
+            advantages (torch.Size([H*N, 1])):
+            returns (torch.Size([H*N, 1])):
+        
+        Returns:
+            a_loss (torch.Size([])): 
+            c_loss (torch.Size([])): 
+        """        
         a_loss = (neglogp * advantages.squeeze(1)).mean()
         c_loss = ((returns - values)**2).mean()
         return a_loss, c_loss
 
 
-    def calc_losses_ppo(self, neglogp_new, neglogp_old, values, advantages, returns, curr_e_clip=0.2):
+    def calc_losses_ppo(self, neglogp_new, neglogp_old, values, advantages, returns, curr_e_clip=0.2)-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Calculate PPO Loss
+        
+        Args:
+            neglogp_new (torch.Size([H*N/B])):
+            neglogp_old (torch.Size([H*N/B])):
+            values (torch.Size([H*N/B, 1])):
+            advantages (torch.Size([H*N/B, 1])):
+            returns (torch.Size([H*N/B, 1])):
+
+        Notation:
+            H = horizon_length (rollout length)
+            N = num_envs (number of parallel environments)
+            B = num_mini_batches (number of mini-batches)
+        """
         ratio = torch.exp(neglogp_old - neglogp_new)
         surr1 = advantages.squeeze(1) * ratio
         surr2 = advantages.squeeze(1) * torch.clamp(ratio, 1.0 - curr_e_clip, 1.0 + curr_e_clip)
@@ -355,20 +401,37 @@ class PolicyGradeintAgent:
         return a_loss, c_loss, ratio
 
 
-    def discount_values(self, last_dones, last_values, dones, values, rewards):
-        '''Calculate GAE(Generalized Advantage Estimation)'''
+    def discount_values(
+            self, 
+            last_dones:torch.Tensor, 
+            last_values:torch.Tensor, 
+            dones:torch.Tensor, 
+            values:torch.Tensor, 
+            rewards:torch.Tensor
+            )-> torch.Tensor:
+        '''
+        Calculate GAE(Generalized Advantage Estimation)
+
+        Args:
+            last_dones (torch.Size([N])):
+            last_values (torch.Size([N, 1])):
+            dones (torch.Size([H, N])):
+            values (torch.Size([H, N, 1])):
+            rewards (torch.Size([H, N, 1])):
+        '''
         lastgaelam = 0
         mb_advs = torch.zeros_like(rewards)
 
-        for t in reversed(range(self.horizon_length)):
-            if t == self.horizon_length - 1:
+        for step_index in reversed(range(self.horizon_length)):
+            if step_index == self.horizon_length - 1:
                 notdones = 1.0 - last_dones
                 next_values = last_values
             else:
-                notdones = 1.0 - dones[t+1]
-                next_values = values[t+1]
+                notdones = 1.0 - dones[step_index+1]
+                next_values = values[step_index+1]
             notdones = notdones.unsqueeze(1)
 
-            delta = rewards[t] + self.gamma * next_values * notdones - values[t]
-            mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * notdones * lastgaelam
+            delta = rewards[step_index] + self.gamma * next_values * notdones - values[step_index]
+            mb_advs[step_index] = lastgaelam = delta + self.gamma * self.lam * notdones * lastgaelam
+
         return mb_advs
