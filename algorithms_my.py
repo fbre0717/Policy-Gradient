@@ -86,7 +86,7 @@ class PolicyGradeintAgent:
 
         self.gamma = 0.99
         self.lam = 0.95
-        self.lr = 3e-4
+        self.lr = 2e-4
         self.log_std = 0
     
         self.init_dims_from_env()
@@ -242,6 +242,8 @@ class PolicyGradeintAgent:
             if epoch % 500 == 0:
                 self.save(self.loadpoint + epoch)
 
+        if self.iswandb:
+            wandb.finish()
         self.save(self.loadpoint + self.num_epochs - 1)
 
 
@@ -265,14 +267,7 @@ class PolicyGradeintAgent:
         for mini_epoch in range(self.num_mini_epochs):  # Mini Epoch
             dataset.apply_permutation()
             for mini_batch in range(len(dataset)):      # Mini Batch
-                batch = dataset[mini_batch]
-                a_loss, c_loss, ratio = self.calc_gradients(
-                    batch["obs"],
-                    batch["actions"],
-                    batch["advantages"],
-                    batch["returns"],
-                    batch["neglogp_old"],
-                )
+                a_loss, c_loss, ratio = self.calc_gradients(dataset[mini_batch])
                 a_losses.append(a_loss)
                 c_losses.append(c_loss)
                 ratios.append(ratio)
@@ -282,34 +277,6 @@ class PolicyGradeintAgent:
                 self.model.value_mean_std.eval()
 
         return epoch_rewards, np.mean(a_losses), np.mean(c_losses), np.mean(ratios)
-
-    def prepare_dataset(self):
-        fl_obses = flatten(self.experience_buffer.tensor_dict['obses'])
-        fl_actions = flatten(self.experience_buffer.tensor_dict['actions'])
-        fl_values = flatten(self.experience_buffer.tensor_dict['values'])
-        fl_returns = flatten(self.experience_buffer.tensor_dict['returns'])
-        fl_advantages = flatten(self.experience_buffer.tensor_dict['advs'])
-        fl_neglogpacs = flatten(self.experience_buffer.tensor_dict['neglogpacs'])
-
-        if self.normalize_value:
-            self.model.value_mean_std.train()
-            fl_values = self.model.value_mean_std(fl_values)
-            fl_returns = self.model.value_mean_std(fl_returns)
-            self.model.value_mean_std.eval()
-
-        if self.normalize_advantage:
-            fl_advantages = (fl_advantages - fl_advantages.mean()) / (fl_advantages.std() + 1e-8)
-
-
-        dataset = MiniBatchDataset(
-            fl_obses,              # HXN, O
-            fl_actions,            # HXN, A
-            fl_advantages,         # HxN, 1
-            fl_returns,            # HXN, 1
-            fl_neglogpacs,         # HXN
-            self.mini_batch_size
-        )
-        return dataset
 
 
     def play_steps(self)->float:
@@ -352,97 +319,6 @@ class PolicyGradeintAgent:
         return epoch_rewards.mean().item()
 
 
-    def calc_gradients(self, obs_tensor, prev_actions, advantages, returns, neglogp_old)-> tuple[float, float, float]:
-        """
-        Args:
-            obs_tensor (torch.Size([H*N, O])):
-            prev_actions (torch.Size([H*N, A])):
-            advantages (torch.Size([H*N, 1])):
-            returns (torch.Size([H*N, 1])):
-            neglogp_old (torch.Size([H*N])):
-
-        ## Notation:
-            H = horizon_length (rollout length)
-            N = num_envs (number of parallel environments)
-        """
-        neglogp_new, values_new, mu, sigma = self.model.forward(obs_tensor, prev_actions)
-        if self.algorithm == 'A2C':
-            a_loss, c_loss = self.calc_losses_a2c(neglogp_new, values_new, advantages, returns) # A2C
-            ratio = torch.tensor(1.0)
-        elif self.algorithm == 'PPO':
-            a_loss, c_loss, ratio = self.calc_losses_ppo(neglogp_new, neglogp_old, values_new, advantages, returns)
-        else:
-            raise ValueError(f"Unsupported algorithm: {self.algorithm}")
-        self.update_actor_critic(a_loss, c_loss)
-
-        return a_loss.item(), c_loss.item(), ratio.item()
-
-
-    def update_actor_critic(self, a_loss, c_loss):
-        '''
-        Backward & Optimizer Step
-        '''
-        self.model.actor_optim.zero_grad()
-        a_loss.backward()
-        self.model.actor_optim.step()
-        self.model.critic_optim.zero_grad()
-        c_loss.backward()
-        self.model.critic_optim.step()
-
-
-    def calc_losses_a2c(
-        self,
-        neglogp: torch.Tensor,
-        values: torch.Tensor,
-        advantages: torch.Tensor,
-        returns: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:        
-        """
-        Calculate A2C Loss
-
-        Args:
-            neglogp (torch.Size([H*N])):
-            values (torch.Size([H*N, 1])):
-            advantages (torch.Size([H*N, 1])):
-            returns (torch.Size([H*N, 1])):
-        
-        Returns:
-            a_loss (torch.Size([])): 
-            c_loss (torch.Size([])): 
-        """        
-        a_loss = (neglogp * advantages.squeeze(1)).mean()
-        c_loss = ((returns - values)**2).mean()
-        return a_loss, c_loss
-
-
-    def calc_losses_ppo(self, neglogp_new, neglogp_old, values, advantages, returns, curr_e_clip=0.2)-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Calculate PPO Loss
-        
-        Args:
-            neglogp_new (torch.Size([H*N/B])):
-            neglogp_old (torch.Size([H*N/B])):
-            values (torch.Size([H*N/B, 1])):
-            advantages (torch.Size([H*N/B, 1])):
-            returns (torch.Size([H*N/B, 1])):
-        Returns:
-            a_loss (torch.Size([])): 
-            - c_loss (torch.Size([]))
-            - ratio_mean (torch.Size([]))
-
-        Notation:
-            H = horizon_length (rollout length)
-            N = num_envs (number of parallel environments)
-            B = num_mini_batches (number of mini-batches)
-        """
-        ratio = torch.exp(neglogp_old - neglogp_new)
-        surr1 = advantages.squeeze(1) * ratio
-        surr2 = advantages.squeeze(1) * torch.clamp(ratio, 1.0 - curr_e_clip, 1.0 + curr_e_clip)
-        a_loss = torch.max(-surr1, -surr2).mean()
-        c_loss = ((returns - values) ** 2).mean()
-        return a_loss, c_loss, ratio.mean()
-
-
     def discount_values(
             self, 
             last_dones:torch.Tensor, 
@@ -477,3 +353,110 @@ class PolicyGradeintAgent:
             mb_advs[step_index] = lastgaelam = delta + self.gamma * self.lam * notdones * lastgaelam
 
         return mb_advs
+
+
+    def prepare_dataset(self):
+        fl_obses = flatten(self.experience_buffer.tensor_dict['obses'])
+        fl_actions = flatten(self.experience_buffer.tensor_dict['actions'])
+        fl_values = flatten(self.experience_buffer.tensor_dict['values'])
+        fl_returns = flatten(self.experience_buffer.tensor_dict['returns'])
+        fl_advantages = flatten(self.experience_buffer.tensor_dict['advs'])
+        fl_neglogpacs = flatten(self.experience_buffer.tensor_dict['neglogpacs'])
+
+        if self.normalize_value:
+            self.model.value_mean_std.train()
+            fl_values = self.model.value_mean_std(fl_values)
+            fl_returns = self.model.value_mean_std(fl_returns)
+            self.model.value_mean_std.eval()
+
+        if self.normalize_advantage:
+            fl_advantages = (fl_advantages - fl_advantages.mean()) / (fl_advantages.std() + 1e-8)
+
+
+        dataset = MiniBatchDataset(
+            fl_obses,              # HXN, O
+            fl_actions,            # HXN, A
+            fl_advantages,         # HxN, 1
+            fl_returns,            # HXN, 1
+            fl_neglogpacs,         # HXN
+            self.mini_batch_size
+        )
+        return dataset
+
+
+    def calc_gradients(self, mini_dataset)-> tuple[float, float, float]:
+        """
+        Args:
+            obs_tensor (torch.Size([H*N/B, O])):
+            prev_actions (torch.Size([H*N/B, A])):
+            advantages (torch.Size([H*N/B, 1])):
+            returns (torch.Size([H*N/B, 1])):
+            neglogp_old (torch.Size([H*N/B])):
+
+        ## Notation:
+            H = horizon_length (rollout length)
+            N = num_envs (number of parallel environments)
+            B = num_mini_batches (number of mini-batches)
+        """
+        obs_tensor = mini_dataset["obs"]
+        prev_actions = mini_dataset["actions"]
+        advantages = mini_dataset["advantages"]
+        returns = mini_dataset["returns"]
+        neglogp_old = mini_dataset["neglogp_old"]
+
+        neglogp_new, values_new, mu, sigma = self.model.forward(obs_tensor, prev_actions)
+        a_loss, c_loss, ratio = self.calc_losses(neglogp_new, neglogp_old, values_new, advantages, returns)
+        self.update_actor_critic(a_loss, c_loss)
+
+        return a_loss.item(), c_loss.item(), ratio.item()
+
+
+    def calc_losses(self, neglogp_new, neglogp_old, values_new, advantages, returns, curr_e_clip=0.2)-> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Calculate Loss
+        
+        Args:
+            neglogp_new (torch.Size([H*N/B])):
+            neglogp_old (torch.Size([H*N/B])):
+            values_new (torch.Size([H*N/B, 1])):
+            advantages (torch.Size([H*N/B, 1])):
+            returns (torch.Size([H*N/B, 1])):
+        Returns:
+            a_loss (torch.Size([])): 
+            - c_loss (torch.Size([]))
+            - ratio_mean (torch.Size([]))
+
+        Notation:
+            H = horizon_length (rollout length)
+            N = num_envs (number of parallel environments)
+            B = num_mini_batches (number of mini-batches)
+        """        
+        if self.algorithm == 'A2C':
+            ratio = torch.tensor(1.0)
+            a_loss = (neglogp_new * advantages.squeeze(1)).mean()
+            c_loss = ((returns - values_new)**2).mean()
+
+        elif self.algorithm == 'PPO':
+            ratio = torch.exp(neglogp_old - neglogp_new)
+            surr1 = advantages.squeeze(1) * ratio
+            surr2 = advantages.squeeze(1) * torch.clamp(ratio, 1.0 - curr_e_clip, 1.0 + curr_e_clip)
+            a_loss = torch.max(-surr1, -surr2).mean()
+            c_loss = ((returns - values_new) ** 2).mean()
+
+        else:
+            raise ValueError(f"Unsupported algorithm: {self.algorithm}")
+        
+        return a_loss, c_loss, ratio.mean()
+
+
+    def update_actor_critic(self, a_loss, c_loss):
+        '''
+        Backward & Optimizer Step
+        '''
+        self.model.actor_optim.zero_grad()
+        a_loss.backward()
+        self.model.actor_optim.step()
+        self.model.critic_optim.zero_grad()
+        c_loss.backward()
+        self.model.critic_optim.step()
+
